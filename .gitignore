@@ -2,3 +2,15 @@ node_modules/
 *.log
 .DS_Store
 Thumbs.db
+
+# 测试与调试产物
+cdp-*.js
+.edge-*/
+ch*-*.txt
+ch-dump.txt
+
+# 第三章（暂不发布）
+chapter3.html
+css/chapter3.css
+js/chapter3.js
+js/engine3.js

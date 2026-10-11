@@ -92,6 +92,7 @@
   const Clock = (() => {
     let baseSec = parseToSec(STORY.startTime);
     let tick = 0;
+    let raw = null;          // 非空时直接显示这个字符串（非法时间用）
 
     function parseToSec(s) {
       const [d, t] = s.split(" ");
@@ -106,9 +107,12 @@
              `${p(dt.getUTCHours())}:${p(dt.getUTCMinutes())}:${p(dt.getUTCSeconds())}`;
     }
     return {
-      now()  { return fmt(baseSec + tick); },
+      now()  { return raw || fmt(baseSec + tick); },
       step(n = 1)   { tick += n; },
       setTime(s)    { baseSec = parseToSec(s); tick = 0; },
+      /* 直接显示一个非法时间字符串（绕过正常格式化） */
+      setRaw(s)     { raw = s; },
+      clearRaw()    { raw = null; },
     };
   })();
 
@@ -129,17 +133,37 @@
     }, 1000);
   }
 
-  /* 时钟倒退故障：00:00:18 → 00:00:17 */
+  /* 时间基准丢失：跳到非法秒数 01:00:60，秒数不进位一直加上去 */
   async function clockGlitch() {
-    Clock.setTime("2026-10-13 00:00:18");
-    paintClock(true);
+    if (clockTimer) { clearInterval(clockTimer); clockTimer = null; }
+
+    /* 停在正常时间一秒 */
+    Clock.setTime("2026-10-13 01:00:18");
+    paintClock(false);
+    await sleep(1400);
+
+    /* 告警：跳到不存在的 01:00:60 */
     sfx("clockAnomaly");
-    await sleep(1200);
-    Clock.setTime("2026-10-13 00:00:17");
+    let sec = 60;
+    Clock.setRaw("2026-10-13 01:00:" + sec);
     paintClock(true);
-    await sleep(900);
-    paintClock(true);
+
+    /* 秒数不进位：01:00:60 → 01:00:61 → ... 共走 13 秒 */
+    const total = 13;
+    for (let i = 1; i < total; i++) {
+      await sleep(1000);
+      sec += 1;
+      Clock.setRaw("2026-10-13 01:00:" + sec);   // 62, 63, ... 72
+      paintClock(true);
+      sfx("clockTick");
+    }
+
+    /* 恢复正常：绿色，重新走时 */
+    Clock.clearRaw();
+    Clock.setTime("2026-10-13 01:01:13");
+    paintClock(false);
     sfx("clockFix");
+    startClock();
   }
 
   /* ============================================================
@@ -224,8 +248,7 @@
   async function renderGroup(group, container) {
     for (const item of group) {
 
-      if (item.t === "__CLEAR__" || item.t === "__CLOCKGLITCH__" ||
-          item.t === "__CURSOR__") continue;
+      if (item.t === "__CLEAR__" || item.t === "__CLOCKGLITCH__") continue;
 
       /* 结尾光标 */
       if (item.t && item.t.includes("__CURSOR__")) {
@@ -237,19 +260,25 @@
         continue;
       }
 
-      /* 弹窗按钮 */
+      /* 弹窗按钮：自动并到同一行（多个连续按钮居中排列） */
       if (item.hint) {
-        const wrap = document.createElement("div");
-        wrap.className = "line";
+        let row = container.lastElementChild;
+        if (!row || !row.classList.contains("btnrow")) {
+          row = document.createElement("div");
+          row.className = "btnrow";
+          container.appendChild(row);
+        }
         const btn = document.createElement("button");
         btn.className = "prompt-hit";
         btn.textContent = item.text;
+        btn.dataset.gate = item.open;
         btn.addEventListener("click", (e) => {
           e.stopPropagation();
+          if (gateDone(item.open)) return;
+          markGate(item.open);
           openModal(item.open);
         });
-        wrap.appendChild(btn);
-        container.appendChild(wrap);
+        row.appendChild(btn);
         logIt("line", `[${item.text.replace(/[\[\]]/g, "").trim()}]`);
         continue;
       }
@@ -260,16 +289,50 @@
   }
 
   /* ============================================================
-     弹窗（内容以静态列表呈现，逐行淡入）
+     弹窗门控：未看过指定弹窗时不允许推进主屏
+     ============================================================ */
+  const gateOpened = {};      // key -> true（已看过）
+  let gateWaiters  = [];      // [{ key, resolve }]
+
+  function markGate(key) {
+    if (gateOpened[key]) return;
+    gateOpened[key] = true;
+
+    /* 只唤醒等待这个 key 的等待者，其余保留 */
+    const keep = [];
+    for (const w of gateWaiters) {
+      if (w.key === key) {
+        try { w.resolve(); } catch (e) {}
+      } else {
+        keep.push(w);
+      }
+    }
+    gateWaiters = keep;
+  }
+
+  function gateDone(key) { return !!gateOpened[key]; }
+
+  function waitGate(key) {
+    if (gateOpened[key]) return Promise.resolve();
+    return new Promise((res) => { gateWaiters.push({ key, resolve: res }); });
+  }
+
+  /* ============================================================
+     弹窗（内容固定节奏逐行播出，不依赖时钟）
      ============================================================ */
   let modalWrap = null;
   let modalLineQueue = [];
   let modalLineIdx = 0;
   let isFullLog = false;
+  let modalPlaying = false;
+
+  const MODAL_LINE_MS = 180;      // 每行间隔
+  const MODAL_END_MS  = 700;      // 播完后的停顿
 
   function stopModalScroll() {
     modalLineQueue = [];
     modalLineIdx = 0;
+    modalPlaying = false;
   }
 
   function modalNext() {
@@ -286,13 +349,22 @@
     modalBody.scrollTop = modalBody.scrollHeight;
   }
 
+  /* 固定节奏把剩余内容全部播出；播完等一会儿再继续主屏 */
   async function runModalAuto() {
-    modalNext();
-    while (!modal.classList.contains("hidden") && modalLineIdx < modalLineQueue.length) {
-      await waitModalTick();
-      if (modal.classList.contains("hidden")) return;
+    if (modalPlaying) return;
+    modalPlaying = true;
+
+    while (modalPlaying &&
+           !modal.classList.contains("hidden") &&
+           modalLineIdx < modalLineQueue.length) {
       modalNext();
+      if (modalLineIdx < modalLineQueue.length) await sleep(MODAL_LINE_MS);
     }
+
+    if (modalPlaying && !modal.classList.contains("hidden")) {
+      await sleep(MODAL_END_MS);
+    }
+    modalPlaying = false;
   }
 
   function openModal(key) {
@@ -371,14 +443,132 @@
           continue;
         }
 
+        if (a === "__PASSWORD__") {
+          await askPassword(liveWrap, group);
+          continue;
+        }
+
+        if (a === "__REDIRECT__") {
+          await redirectTo(group.redirect, group.seconds || 5);
+          continue;
+        }
+
         continue;
       }
 
       /* ---- 内容组 ---- */
       await renderGroup(group, liveWrap);
 
+      /* 本组带门控按钮：同组的按钮必须全部点开过，才能继续 */
+      const hintItems = group.filter((it) => it && it.hint);
+      if (hintItems.length) {
+        const pending = hintItems.filter((it) => !gateDone(it.open));
+        if (pending.length) {
+          await Promise.all(pending.map((it) => waitGate(it.open)));
+          if (i < script.length - 1) await waitTick();
+          continue;
+        }
+      }
+
       if (i < script.length - 1) await waitTick();
     }
+  }
+
+  /* ============================================================
+     自动跳转（__REDIRECT__）
+     ============================================================ */
+  async function redirectTo(url, seconds) {
+    if (clockTimer) { clearInterval(clockTimer); clockTimer = null; }
+
+    let left = seconds;
+    const n = append(liveWrap, "line amber bold",
+      "正在接入下一节点 ...... " + left + "s");
+    logIt("line amber bold", "正在接入下一节点 ......");
+
+    while (left > 0) {
+      await sleep(1000);
+      left -= 1;
+      n.textContent = "正在接入下一节点 ...... " + left + "s";
+      if (left > 0) sfx("clockTick");
+    }
+
+    append(liveWrap, "line green bold", "LINK ESTABLISHED · 正在跳转");
+    logIt("line green bold", "LINK ESTABLISHED · 正在跳转");
+    await sleep(500);
+
+    try { window.location.href = url; } catch (e) {}
+  }
+
+  /* ============================================================
+     密码输入：输入正确密钥才能继续
+     ============================================================ */
+  async function askPassword(container, item) {
+    const correct = String(item.answer || "");
+
+    return new Promise((resolve) => {
+      append(container, "line cyan bold", item.prompt || "ENTER RECOVERY KEY");
+
+      const wrap = document.createElement("div");
+      wrap.className = "line pwline";
+
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "pwinput";
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      input.maxLength = 24;
+      input.placeholder = item.placeholder || "__________.__";
+
+      const btn = document.createElement("button");
+      btn.className = "prompt-hit";
+      btn.textContent = "[ 提交 ]";
+
+      wrap.appendChild(input);
+      wrap.appendChild(btn);
+      container.appendChild(wrap);
+      scrollDown();
+
+      logIt("line", "[ 等待输入恢复密钥 ]");
+
+      wrap.addEventListener("click", (e) => e.stopPropagation());
+      input.addEventListener("click", (e) => e.stopPropagation());
+
+      let done = false;
+
+      async function submit() {
+        if (done) return;
+        const val = (input.value || "").trim();
+        if (val === "") return;
+
+        if (val === correct) {
+          done = true;
+          input.disabled = true;
+          btn.disabled = true;
+          sfx("clockFix");
+
+          append(container, "line green bold", "[OK] 密钥正确 · KEY ACCEPTED");
+          logIt("line green bold", "[OK] 密钥正确 · KEY ACCEPTED");
+          await sleep(500);
+
+          wrap.remove();
+          resolve(true);
+        } else {
+          sfx("alarm");
+          append(container, "line red bold", "[DENIED] 密钥错误 · KEY REJECTED");
+          logIt("line red bold", "[DENIED] 密钥错误 · KEY REJECTED");
+          input.value = "";
+          input.focus();
+        }
+      }
+
+      btn.addEventListener("click", (e) => { e.stopPropagation(); submit(); });
+      input.addEventListener("keydown", (e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") { e.preventDefault(); submit(); }
+      });
+
+      setTimeout(() => input.focus(), 120);
+    });
   }
 
   /* ============================================================

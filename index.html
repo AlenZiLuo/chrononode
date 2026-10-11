@@ -10,12 +10,14 @@
 
 <div class="app">
 
-  <!-- 固定状态栏 -->
+  <!-- 顶栏：左上角时钟 + 节点信息 -->
   <div class="statusbar">
+    <span class="clock-fixed" id="clockval">2026-10-13 01:00:00</span>
+    <span class="sb-divider">│</span>
     <span class="sb-label">CHRONONODE</span>
     <span class="sb-node" id="nodeid">CN-BACKUP-01</span>
     <span class="sb-flex"></span>
-    <span id="clockval" class="sb-clock">2026-10-13 00:00:03</span>
+    <span class="sb-stat" id="nodeState">NODE STATUS: STANDBY</span>
   </div>
 
   <!-- 主区 -->
