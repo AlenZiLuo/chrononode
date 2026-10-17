@@ -9,8 +9,3 @@ cdp-*.js
 ch*-*.txt
 ch-dump.txt
 
-# 第三章（暂不发布）
-chapter3.html
-css/chapter3.css
-js/chapter3.js
-js/engine3.js

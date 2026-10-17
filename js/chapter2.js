@@ -253,6 +253,23 @@ const STORY = {
     [
       { t: "AWAITING OPERATOR INPUT__CURSOR__" },
     ],
+
+    /* ---------- 08 接入第三信道 ---------- */
+    [
+      { t: "==========================================================", c: "dark" },
+      { t: "  NEXT CHANNEL:      CH-03", c: "cyan bold" },
+      { t: "  下一信道：第三信道", c: "dim" },
+      { t: "==========================================================", c: "dark" },
+    ],
+    [
+      { t: "  ROUTE:             ESTABLISHING", c: "fg" },
+      { t: "  路由：建立中", c: "dim" },
+      { t: "  REFERENCE SOURCE:  __AMBER__SEEKING", amber: true },
+      { t: "  参考源：搜索中", c: "dim" },
+      { t: "  OPERATOR LINK:     READY", c: "green" },
+      { t: "  操作员链路：就绪", c: "dim" },
+    ],
+    { t: "__REDIRECT__", redirect: "chapter3.html", seconds: 5 },
   ],
 
   /* ============================================================
